@@ -1,0 +1,60 @@
+name: windows-build2
+
+on:
+  push:
+    branches:
+      - ci/**
+      - main
+      - release-0.1
+  pull_request:
+    branches:
+      - main
+      - release-0.1
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Windows CPU
+    runs-on: windows-2022
+    env:
+      OPENBLAS_VERSION: 0.3.23
+      SDE_VERSION: 9.33.0-2024-01-07
+      VULKAN_VERSION: 1.4.313.2
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: cpu
+            enable_vulkan: 'OFF'
+          - backend: vulkan
+            enable_vulkan: 'ON'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Vulkan SDK
+        id: get_vulkan
+        if: ${{ matrix.backend == 'vulkan' }}
+        run: |
+          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
+          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\bin"
+      - name: Build audiocpp_cli
+        shell: pwsh
+        run: |
+          .\scripts\build_windows.ps1 `
+            -Preset windows-${{matrix.backend}}-release `
+            -Target audiocpp_cli
+
+      - name: Build audiocpp_server
+        shell: pwsh
+        run: |
+          .\scripts\build_windows.ps1 `
+            -Preset windows-${{matrix.backend}}-release `
+            -Target audiocpp_server
+      - name: Release
+        uses: softprops/action-gh-release@v3
+        with:
+          fail_on_unmatched_files: true
+          files: ./build/windows-${{ matrix.backend }}-release/bin/**/*
+          tag_name: ${{ github.ref_name }}-${{ matrix.backend }}

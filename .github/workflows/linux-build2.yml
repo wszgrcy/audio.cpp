@@ -51,9 +51,6 @@ jobs:
       - name: Build
         run: |
           cmake --build "$BUILD_DIR" --parallel "$(nproc)" --target audiocpp_cli audiocpp_server
-      - name: test
-        run: |
-          ls build -lR
       - name: Release
         uses: softprops/action-gh-release@v3
         with:

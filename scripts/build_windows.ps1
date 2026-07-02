@@ -254,6 +254,18 @@ function Get-PresetSettings {
     param([Parameter(Mandatory = $true)][string]$Name)
 
     switch ($Name) {
+        "windows-vulkan-release" {
+            return @{
+                BuildType = "Release"
+                BuildTests = "OFF"
+                Native = "OFF"
+                EnableCuda = "OFF"
+                EnableCudaGraphs = "OFF"
+                EnableVulkan = "ON"
+                CFlagsDebug = ""
+                CxxFlagsDebug = ""
+            }
+        }
         "windows-cpu-release" {
             return @{
                 BuildType = "Release"
@@ -377,7 +389,7 @@ $configureArgs = @(
     "-DENGINE_ENABLE_CUDA=$($settings.EnableCuda)",
     "-DENGINE_ENABLE_OPENMP=ON",
     "-DENGINE_ENABLE_CUDA_GRAPHS=$($settings.EnableCudaGraphs)",
-    "-DENGINE_ENABLE_VULKAN=OFF",
+    "-DENGINE_ENABLE_VULKAN=$(if ($settings.ContainsKey('EnableVulkan')) { $settings.EnableVulkan } else { 'OFF' })",
     "-DENGINE_ENABLE_METAL=OFF",
     "-DGGML_OPENMP=ON",
     "-DGGML_NATIVE=$($settings.Native)",
