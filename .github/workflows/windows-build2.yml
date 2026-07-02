@@ -11,7 +11,8 @@ on:
       - main
       - release-0.1
   workflow_dispatch:
-
+permissions:
+  contents: write
 jobs:
   build:
     name: Windows CPU
