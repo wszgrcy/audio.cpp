@@ -11,7 +11,8 @@ on:
       - main
       - release-0.1
   workflow_dispatch:
-
+permissions:
+  contents: write
 jobs:
   build:
     name: Linux ${{ matrix.backend }}
@@ -57,5 +58,5 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           fail_on_unmatched_files: true
-          files: ./build/**/*
+          files: ./build/ci-linux-${{ matrix.backend }}/bin/**/*
           tag_name: ${{ github.ref_name }}
