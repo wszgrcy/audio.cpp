@@ -59,4 +59,4 @@ jobs:
         with:
           fail_on_unmatched_files: true
           files: ./build/ci-linux-${{ matrix.backend }}/bin/**/*
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}-${{ matrix.backend }}
