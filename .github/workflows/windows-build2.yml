@@ -18,8 +18,6 @@ jobs:
     name: Windows CPU
     runs-on: windows-2022
     env:
-      OPENBLAS_VERSION: 0.3.23
-      SDE_VERSION: 9.33.0-2024-01-07
       VULKAN_VERSION: 1.4.313.2
     strategy:
       fail-fast: false

@@ -347,7 +347,8 @@ function Get-PresetSettings {
             return @{
                 BuildType = "Release"
                 BuildTests = "OFF"
-                Native = "OFF"
+                Native = "ON"
+                Llamafile = "ON"
                 EnableCuda = "OFF"
                 EnableCudaGraphs = "OFF"
                 EnableVulkan = "ON"
