@@ -5,11 +5,13 @@ on:
     branches:
       - ci/**
       - main
+      - dev
       - release-0.2
       - dev
   pull_request:
     branches:
       - main
+      - dev
       - release-0.2
       - dev
   workflow_dispatch:
