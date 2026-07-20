@@ -10,7 +10,9 @@
 #include "engine/framework/audio/chunking.h"
 #include "engine/framework/audio/conversion.h"
 #include "engine/framework/debug/trace.h"
+#include "engine/framework/io/json.h"
 #include "engine/framework/runtime/registry.h"
+#include "engine/framework/runtime/session.h"
 
 #include <algorithm>
 #include <cmath>
@@ -50,6 +52,7 @@ void print_task_list_help() {
         << "    --device <n>\n"
         << "    --threads <n>  Backend and OpenMP worker threads, default 4\n"
         << "    --registry-config <path>\n"
+        << "    --model-spec-override <json-or-directory>  Override package-spec resolution\n"
         << "    --config <id>\n"
         << "    --weight <id>\n"
         << "    --log  Stream framework progress and timing logs to stdout\n"
@@ -108,6 +111,7 @@ void print_task_list_help() {
         << "    --guidance-scale <float>\n"
         << "    --num-inference-steps <n>\n"
         << "    --text-chunk-size <chars>\n"
+        << "    --text-chunk-mode default|tag_aware|japanese|endline\n"
         << "  Inputs:\n"
         << "    --audio <wav>\n"
         << "    --text <text>\n"
@@ -139,7 +143,7 @@ void print_task_list_help() {
         << "    --mode streaming uses the selected model's default streaming policy\n"
         << "  Utility:\n"
         << "    --inspect\n"
-        << "    --list-loaders\n"
+        << "    --list-loaders [--json]\n"
         << "\n"
         << "  Tasks:\n"
         << "    vad    voice activity detection\n"
@@ -247,6 +251,7 @@ void print_model_common_options(const engine::runtime::ModelInspection & inspect
             << "    --reference-duration-seconds <float>\n"
             << "    --num-inference-steps <n>\n"
             << "    --text-chunk-size <chars>\n"
+            << "    --text-chunk-mode default|tag_aware|japanese|endline\n"
             << "    --seed <n>\n";
     }
     if (model_supports_task(inspection, engine::runtime::VoiceTaskKind::Asr) ||
@@ -561,10 +566,67 @@ int audiocpp_cli_main(int argc, char ** argv) {
             return 0;
         }
         if (has_arg(argc, argv, "--list-loaders")) {
-            const auto families = registry.families();
-            std::cout << "registered_loaders=" << registry.size() << "\n";
-            for (const auto & family : families) {
-                std::cout << family << "\n";
+            const auto advertisements = registry.advertise_loaders();
+            if (has_arg(argc, argv, "--json")) {
+                engine::io::json::Value::Object loaders_object;
+                for (const auto & row : advertisements) {
+                    engine::io::json::Value::Object tasks_object;
+                    for (const auto & task_cap : row.capabilities.supported_tasks) {
+                        engine::io::json::Value::Array modes;
+                        for (const auto mode : task_cap.modes) {
+                            modes.push_back(engine::io::json::Value::make_string(engine::runtime::to_string(mode)));
+                        }
+                        tasks_object.emplace(
+                            engine::runtime::to_string(task_cap.task),
+                            engine::io::json::Value::make_array(std::move(modes)));
+                    }
+                    engine::io::json::Value::Array endpoints;
+                    for (const auto & endpoint : row.api_endpoints) {
+                        endpoints.push_back(engine::io::json::Value::make_string(endpoint));
+                    }
+                    engine::io::json::Value::Object loader_object;
+                    loader_object.emplace("tasks", engine::io::json::Value::make_object(std::move(tasks_object)));
+                    loader_object.emplace(
+                        "instructions_policy",
+                        engine::io::json::Value::make_string(row.instructions_policy));
+                    loader_object.emplace(
+                        "api_endpoints",
+                        engine::io::json::Value::make_array(std::move(endpoints)));
+                    loaders_object.emplace(
+                        row.family,
+                        engine::io::json::Value::make_object(std::move(loader_object)));
+                }
+                engine::io::json::Value::Object root;
+                root.emplace("schema_version", engine::io::json::Value::make_number(1));
+                root.emplace("loaders", engine::io::json::Value::make_object(std::move(loaders_object)));
+                std::cout << engine::io::json::stringify(engine::io::json::Value::make_object(std::move(root)))
+                          << "\n";
+            } else {
+                std::cout << "registered_loaders=" << advertisements.size() << "\n";
+                for (const auto & row : advertisements) {
+                    std::cout << row.family;
+                    if (!row.capabilities.supported_tasks.empty()) {
+                        std::cout << ":";
+                        for (size_t i = 0; i < row.capabilities.supported_tasks.size(); ++i) {
+                            const auto & task_cap = row.capabilities.supported_tasks[i];
+                            if (i > 0) {
+                                std::cout << ",";
+                            }
+                            std::cout << " " << engine::runtime::to_string(task_cap.task);
+                            if (!task_cap.modes.empty()) {
+                                std::cout << " (";
+                                for (size_t m = 0; m < task_cap.modes.size(); ++m) {
+                                    if (m > 0) {
+                                        std::cout << "|";
+                                    }
+                                    std::cout << engine::runtime::to_string(task_cap.modes[m]);
+                                }
+                                std::cout << ")";
+                            }
+                        }
+                    }
+                    std::cout << "\n";
+                }
             }
             return 0;
         }
@@ -593,6 +655,7 @@ int audiocpp_cli_main(int argc, char ** argv) {
                     collect_key_value_args(argc, argv, "--load-option"),
                     collect_key_value_args(argc, argv, "--session-option"),
                     collect_key_value_args(argc, argv, "--workflow-input"),
+                    optional_path_arg(argc, argv, "--model-spec-override"),
                     find_arg(argc, argv, "--audio-converter").value_or("ffmpeg"),
                 });
             return 0;
@@ -611,6 +674,7 @@ int audiocpp_cli_main(int argc, char ** argv) {
 
         engine::runtime::ModelLoadRequest load_request;
         load_request.model_path = std::filesystem::path(*model_arg);
+        load_request.model_spec_override = optional_path_arg(argc, argv, "--model-spec-override");
         if (const auto family = find_arg(argc, argv, "--family")) {
             load_request.family_hint = *family;
         }

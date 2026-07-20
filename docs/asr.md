@@ -27,6 +27,15 @@ Citrinet is an offline CTC ASR model. It produces transcription text from speech
 audiocpp_cli --task asr --family citrinet_asr --model models/citrinet --backend cuda --audio speech_16k.wav
 ```
 
+Create a standalone Q8_0 GGUF from the converted Citrinet safetensors layout:
+
+```powershell
+audiocpp_gguf.exe --input models\citrinet\citrinet_256.safetensors --root models\citrinet --output models\citrinet-Q8_0\model.gguf --type q8_0
+```
+
+The GGUF embeds `citrinet_256_config.json` and the vocabulary/tokenizer sidecars, so the
+completed `model.gguf` can be moved, renamed, and passed directly to `--model`.
+
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
 | `--audio` | WAV path | required | Speech input. Use 16 kHz WAV for the example path. |
@@ -51,6 +60,18 @@ Offline:
 ```bash
 audiocpp_cli --task asr --family higgs_audio_stt --model models/higgs-audio-v3-stt --backend cuda --audio speech_16k.wav --text "Transcribe the speech." --text-out transcript.txt
 ```
+
+Standalone Q8_0 GGUF conversion uses the two-shard index. Map the shared Whisper
+preprocessor configuration into the GGUF so the original directory layout is not required:
+
+```powershell
+audiocpp_gguf.exe --input models\higgs-audio-v3-stt\model.safetensors.index.json --root models\higgs-audio-v3-stt --sidecar models\whisper-large-v3\preprocessor_config.json=preprocessor_config.json --output models\higgs-audio-v3-stt-Q8_0\model.gguf --type q8_0
+```
+
+The shared `whisper-large-v3/preprocessor_config.json` is required only as an input while
+creating the GGUF. Once embedded, the resulting GGUF can be moved to an unrelated
+directory, renamed, and passed directly to `--model`; the external Whisper file and
+directory are no longer required at runtime.
 
 Streaming:
 
@@ -88,6 +109,15 @@ Hviske ASR is an offline Cohere ASR model path. The integration exposes Danish p
 audiocpp_cli --task asr --family hviske_asr --model models/hviske-v5.3 --backend cuda --audio speech_16k.wav --text-out transcript.txt
 ```
 
+Create a standalone Q8_0 GGUF:
+
+```powershell
+audiocpp_gguf.exe --input models\hviske-v5.3\model.safetensors --root models\hviske-v5.3 --output models\hviske-v5.3-Q8_0\model.gguf --type q8_0
+```
+
+Configuration, generation settings, and the SentencePiece tokenizer are embedded. The
+completed GGUF can therefore be moved, renamed, and passed directly to `--model`.
+
 | Option | Values | Default | Meaning |
 |---|---|---:|---|
 | `--audio` | WAV path | required | Speech input. |
@@ -123,6 +153,14 @@ Offline:
 
 ```bash
 audiocpp_cli --task asr --family nemotron_asr --model models/nemotron-3.5-asr-streaming-0.6b --backend cuda --audio speech_16k.wav --language en-US --text-out transcript.txt
+```
+
+Nemotron 3.5 ASR also accepts audio.cpp-native GGUF checkpoints. The converter
+embeds its configuration, processor metadata, and tokenizer by default, so the
+converted directory may contain only `model.gguf`:
+
+```powershell
+audiocpp_gguf.exe --input models\nemotron-3.5-asr-streaming-0.6b\model.safetensors --output models\nemotron-3.5-asr-streaming-0.6b-Q8_0\model.gguf --type q8_0
 ```
 
 Streaming:
@@ -162,6 +200,16 @@ VibeVoice ASR is an offline ASR model with greedy, sampling, and beam-search dec
 audiocpp_cli --task asr --family vibevoice_asr --model models/VibeVoice-ASR --backend cuda --audio speech_16k.wav --text-out transcript.txt
 ```
 
+VibeVoice-ASR also accepts a standalone audio.cpp-native GGUF. Pass the shard
+index to merge all eight safetensors files while converting:
+
+```powershell
+audiocpp_gguf.exe --input models\VibeVoice-ASR\model.safetensors.index.json --output models\VibeVoice-ASR-Q8_0\model.gguf --type q8_0
+```
+
+Configuration and tokenizer assets are embedded by default, so the output
+directory may contain only `model.gguf`.
+
 Structured output:
 
 ```bash
@@ -186,5 +234,86 @@ audiocpp_cli --task asr --family vibevoice_asr --model models/VibeVoice-ASR --ba
 | `--segments-out` | JSON path | not set | Write structured ASR segments when produced. |
 | `--turns-out` | JSON path | not set | Write speaker turns when produced. |
 | `--session-option vibevoice_asr.vad_model_path=<path>` | model directory | `assets/framework/models/silero_vad` | Internal VAD model used by `--audio-chunk-mode vad`. |
+
+## Voxtral Realtime
+
+Voxtral Realtime is a Mistral realtime ASR model with offline and streaming sessions. It accepts the native Hugging Face model directory and standalone audio.cpp GGUF packages.
+
+| Field | Value |
+|---|---|
+| Family | `voxtral_realtime` |
+| Model directory | `models/Voxtral-Mini-4B-Realtime-2602` or a standalone Voxtral GGUF |
+| Task | `asr` |
+| Modes | `offline`, `streaming` |
+| Output | Transcription text |
+| Streaming input | Audio chunks |
+| Timestamps | Not exposed |
+
+Offline CLI:
+
+```bash
+audiocpp_cli --task asr --family voxtral_realtime --model <VOXTRAL_MODEL> --backend cuda --threads 8 --audio assets/resources/sample.wav --text-out transcript.txt
+```
+
+Sampling and token-cap options can be passed through request options:
+
+```bash
+audiocpp_cli --task asr --family voxtral_realtime --model <VOXTRAL_MODEL> --backend cuda --threads 8 --audio assets/resources/sample.wav --text-out transcript.txt --request-option max_new_tokens=256 --do-sample false --temperature 1.0 --top-p 1.0 --top-k 50 --seed 1234
+```
+
+Streaming CLI:
+
+```bash
+audiocpp_cli --task asr --family voxtral_realtime --model <VOXTRAL_MODEL> --backend cuda --threads 8 --mode streaming --audio assets/resources/sample.wav --text-out transcript.txt
+```
+
+Streaming server config:
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 8080,
+  "backend": "cuda",
+  "device": 0,
+  "threads": 8,
+  "lazy_load": true,
+  "models": [
+    {
+      "id": "voxtral-stream",
+      "family": "voxtral_realtime",
+      "path": "/path/to/Voxtral-Mini-4B-Realtime-2602",
+      "task": "asr",
+      "mode": "streaming"
+    }
+  ]
+}
+```
+
+Streaming server request:
+
+```bash
+curl -N http://127.0.0.1:8080/v1/audio/transcriptions \
+  -F model=voxtral-stream \
+  -F stream=true \
+  -F file=@assets/resources/sample.wav
+```
+
+| Option | Values | Default | Meaning |
+|---|---|---:|---|
+| `--audio` | WAV path | required | Speech input. |
+| `--mode` | `offline`, `streaming` | `offline` | Full-context or streaming session. |
+| `--request-option max_new_tokens=<n>` | integer | model-derived limit | Maximum generated transcript tokens. |
+| `--do-sample` | bool | `false` | Enable sampling instead of greedy decode. |
+| `--temperature` | float | `1.0` | Sampling temperature. |
+| `--top-p` | float | `1.0` | Nucleus sampling limit. |
+| `--top-k` | integer | `50` | Top-k sampling limit; `0` disables top-k. |
+| `--seed` | integer | `1234` | Sampling seed. |
+| `--text-out` | TXT path | not set | Transcript output. The transcript is also printed to stdout. |
+| `--session-option voxtral_realtime.weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | `native` | Shared matmul weight storage type. |
+| `--session-option voxtral_realtime.audio_encoder_weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | shared setting | Audio encoder matmul weight storage type. |
+| `--session-option voxtral_realtime.text_decoder_weight_type=<type>` | `native`, `f32`, `f16`, `bf16`, `q8_0` | shared setting | Text decoder matmul weight storage type. |
+| `--session-option voxtral_realtime.audio_encoder_graph_arena_mb=<n>` | MB | `512` | Audio encoder graph arena size. |
+| `--session-option voxtral_realtime.text_decoder_prefill_graph_arena_mb=<n>` | MB | `512` | Text decoder prefill graph arena size. |
+| `--session-option voxtral_realtime.text_decoder_decode_graph_arena_mb=<n>` | MB | `512` | Text decoder cached-step graph arena size. |
 
 For backend weight-type controls, use `audiocpp_cli --inspect --model <model-dir> --family <family>`.

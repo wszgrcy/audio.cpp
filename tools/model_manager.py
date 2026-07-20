@@ -7,6 +7,7 @@ import fractions
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -20,9 +21,31 @@ from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-import torch
-from safetensors.torch import load_file, save_file
-import yaml
+# Heavy install/convert deps are imported lazily so ``list --json`` / ``info``
+# work without Torch in the environment.
+torch: Any = None
+safe_open: Any = None
+load_file: Any = None
+save_file: Any = None
+yaml: Any = None
+
+
+def _ensure_install_deps() -> None:
+    """Import Torch / safetensors / yaml on first install/convert use."""
+    global torch, safe_open, load_file, save_file, yaml
+    if torch is not None:
+        return
+    import torch as _torch
+    from safetensors import safe_open as _safe_open
+    from safetensors.torch import load_file as _load_file
+    from safetensors.torch import save_file as _save_file
+    import yaml as _yaml
+
+    torch = _torch
+    safe_open = _safe_open
+    load_file = _load_file
+    save_file = _save_file
+    yaml = _yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -82,6 +105,7 @@ class SnapshotSource:
     repo_id: str
     revision: str = "main"
     include_prefixes: tuple[str, ...] = ()
+    include_suffixes: tuple[str, ...] = ()
     exclude_prefixes: tuple[str, ...] = ()
 
 
@@ -119,10 +143,22 @@ class ModelPackage:
     required_files: tuple[str, ...]
     source: SnapshotSource | CompositeSnapshotSource | ConverterSource | UnsupportedSource
     description: str = ""
+    # Optional identity fields for ``list --json`` consumers. When unset,
+    # family/tasks/standalone/gated are derived from local package metadata only.
+    family: str | None = None
+    standalone: bool | None = None
+    parent_package_id: str | None = None
+    tasks: tuple[str, ...] = ()
+    gated: bool | None = None
 
 
 UTILITY_CONVERTER_KINDS = {"pytorch_to_safetensors"}
 POSTPROCESS_SNAPSHOT_PACKAGE_IDS = {"voxcpm2"}
+# HF repos that require accepting a license / access grant before download.
+_GATED_REPO_MARKERS = (
+    "kyutai/pocket-tts",
+    "stabilityai/",
+)
 
 
 def package_install_kind(package: ModelPackage) -> str:
@@ -186,10 +222,12 @@ CATALOG: tuple[ModelPackage, ...] = (
         target_directory="Kokoro-82M-bf16",
         source=SnapshotSource(repo_id="mlx-community/Kokoro-82M-bf16"),
         required_files=("config.json", "kokoro-v1_0.safetensors", "voices/af_heart.safetensors"),
+        family="kokoro_tts",
+        tasks=("tts",),
     ),
     ModelPackage(
-        id="moss_tts",
-        display_name="MOSS TTS Nano 100M",
+        id="moss_tts_nano_100m",
+        display_name="MOSS-TTS-Nano 100M",
         target_directory="MOSS-TTS-Nano-100M",
         source=CompositeSnapshotSource(
             placements=(
@@ -213,15 +251,15 @@ CATALOG: tuple[ModelPackage, ...] = (
             "audio_tokenizer/model-00001-of-00001.safetensors",
             "audio_tokenizer/model.safetensors.index.json",
         ),
-        description="Recommended MOSS package; assembles the TTS model and audio tokenizer dependency.",
+        description="Recommended MOSS-TTS-Nano package; assembles the TTS model and MOSS-Audio-Tokenizer-Nano dependency.",
     ),
     ModelPackage(
-        id="moss_tts_nano_100m",
-        display_name="MOSS TTS Nano 100M subcomponent",
+        id="moss_tts_nano_100m_model",
+        display_name="MOSS-TTS-Nano 100M model subcomponent",
         target_directory="MOSS-TTS-Nano-100M",
         source=SnapshotSource(repo_id="OpenMOSS-Team/MOSS-TTS-Nano-100M"),
-        required_files=("config.json", "model.safetensors", "tokenizer.model", "tokenizer_config.json"),
-        description="Subcomponent only. Use moss_tts for the full framework-ready MOSS runtime layout.",
+        required_files=("config.json", "pytorch_model.bin", "tokenizer.model", "tokenizer_config.json"),
+        description="Subcomponent only. Use moss_tts_nano_100m for the full framework-ready MOSS runtime layout.",
     ),
     ModelPackage(
         id="moss_audio_tokenizer_nano",
@@ -229,7 +267,72 @@ CATALOG: tuple[ModelPackage, ...] = (
         target_directory="MOSS-Audio-Tokenizer-Nano",
         source=SnapshotSource(repo_id="OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"),
         required_files=("config.json", "model-00001-of-00001.safetensors", "model.safetensors.index.json"),
-        description="Subcomponent only. Use moss_tts for the full framework-ready MOSS runtime layout.",
+        description="Subcomponent only. Use moss_tts_nano_100m for the full framework-ready MOSS Nano runtime layout.",
+    ),
+    ModelPackage(
+        id="moss_audio_tokenizer_v2",
+        display_name="MOSS Audio Tokenizer v2 subcomponent",
+        target_directory="MOSS-Audio-Tokenizer-v2",
+        source=SnapshotSource(repo_id="OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"),
+        required_files=(
+            "config.json",
+            "model.safetensors.index.json",
+            "model-00001-of-00003.safetensors",
+            "model-00002-of-00003.safetensors",
+            "model-00003-of-00003.safetensors",
+        ),
+        description="Subcomponent only. Use moss_tts_local_v1_5 for the full framework-ready MOSS-TTS-Local runtime layout.",
+    ),
+    ModelPackage(
+        id="moss_tts_local_v1_5",
+        display_name="MOSS-TTS-Local Transformer v1.5",
+        target_directory="MOSS-TTS-Local-Transformer-v1.5",
+        source=CompositeSnapshotSource(
+            placements=(
+                SnapshotPlacement(
+                    source=SnapshotSource(repo_id="OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"),
+                    required_files=(
+                        "config.json",
+                        "model.safetensors",
+                        "tokenizer.json",
+                        "tokenizer_config.json",
+                        "vocab.json",
+                        "merges.txt",
+                        "special_tokens_map.json",
+                        "added_tokens.json",
+                        "chat_template.jinja",
+                    ),
+                ),
+                SnapshotPlacement(
+                    source=SnapshotSource(repo_id="OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"),
+                    target_subdir="audio_tokenizer",
+                    required_files=(
+                        "config.json",
+                        "model.safetensors.index.json",
+                        "model-00001-of-00003.safetensors",
+                        "model-00002-of-00003.safetensors",
+                        "model-00003-of-00003.safetensors",
+                    ),
+                ),
+            ),
+        ),
+        required_files=(
+            "config.json",
+            "model.safetensors",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "vocab.json",
+            "merges.txt",
+            "special_tokens_map.json",
+            "added_tokens.json",
+            "chat_template.jinja",
+            "audio_tokenizer/config.json",
+            "audio_tokenizer/model.safetensors.index.json",
+            "audio_tokenizer/model-00001-of-00003.safetensors",
+            "audio_tokenizer/model-00002-of-00003.safetensors",
+            "audio_tokenizer/model-00003-of-00003.safetensors",
+        ),
+        description="MOSS-TTS-Local Transformer v1.5 with the MOSS-Audio-Tokenizer-v2 codec dependency.",
     ),
     ModelPackage(
         id="omnivoice",
@@ -258,6 +361,58 @@ CATALOG: tuple[ModelPackage, ...] = (
             "vocab.json",
             "merges.txt",
         ),
+    ),
+    ModelPackage(
+        id="qwen3_asr_1_7b_hf",
+        display_name="Qwen3 ASR 1.7B HF",
+        target_directory="Qwen3-ASR-1.7B-hf",
+        source=SnapshotSource(
+            repo_id="Qwen/Qwen3-ASR-1.7B-hf",
+            include_prefixes=(
+                "config.json",
+                "generation_config.json",
+                "model.safetensors",
+                "processor_config.json",
+                "tokenizer_config.json",
+                "tokenizer.json",
+            ),
+        ),
+        required_files=(
+            "config.json",
+            "generation_config.json",
+            "model.safetensors",
+            "processor_config.json",
+            "tokenizer_config.json",
+            "tokenizer.json",
+        ),
+        description="Native Hugging Face Transformers checkpoint; no conversion is required.",
+    ),
+    ModelPackage(
+        id="voxtral_realtime",
+        display_name="Voxtral Mini 4B Realtime",
+        target_directory="Voxtral-Mini-4B-Realtime-2602",
+        source=SnapshotSource(
+            repo_id="mistralai/Voxtral-Mini-4B-Realtime-2602",
+            include_prefixes=(
+                "config.json",
+                "generation_config.json",
+                "model.safetensors",
+                "params.json",
+                "processor_config.json",
+                "tekken.json",
+            ),
+        ),
+        required_files=(
+            "config.json",
+            "generation_config.json",
+            "model.safetensors",
+            "params.json",
+            "processor_config.json",
+            "tekken.json",
+        ),
+        family="voxtral_realtime",
+        tasks=("asr",),
+        description="Native Hugging Face checkpoint for Voxtral realtime ASR; no conversion is required.",
     ),
     ModelPackage(
         id="higgs_audio_stt",
@@ -667,6 +822,8 @@ CATALOG: tuple[ModelPackage, ...] = (
             "tokenizer.json",
             "tokenizer_config.json",
         ),
+        family="higgs_audio_tts",
+        tasks=("tts",),
     ),
     ModelPackage(
         id="heartmula",
@@ -741,6 +898,7 @@ CATALOG: tuple[ModelPackage, ...] = (
         ),
         required_files=(
             "model.safetensors",
+            "model_config.json",
             "../llm-jp-3-150m/tokenizer.json",
             "../Semantic-DACVAE-Japanese-32dim/weights.safetensors",
         ),
@@ -770,6 +928,7 @@ CATALOG: tuple[ModelPackage, ...] = (
         ),
         required_files=(
             "model.safetensors",
+            "model_config.json",
             "../llm-jp-3-150m/tokenizer.json",
             "../Semantic-DACVAE-Japanese-32dim/weights.safetensors",
         ),
@@ -828,6 +987,36 @@ CATALOG: tuple[ModelPackage, ...] = (
             "ggml/supertonic.safetensors",
             "voice_styles/M1.json",
         ),
+    ),
+    ModelPackage(
+        id="index_tts2",
+        display_name="IndexTTS2",
+        target_directory="IndexTTS-2",
+        source=SnapshotSource(repo_id="mlx-community/index-tts2-mlx"),
+        required_files=(
+            "config.yaml",
+            "bpe.model",
+            "gpt.safetensors",
+            "s2mel.safetensors",
+            "feat1.safetensors",
+            "feat2.safetensors",
+            "wav2vec2bert_stats.safetensors",
+            "semantic_codec_model.safetensors",
+            "campplus.safetensors",
+            "w2v-bert-2.0/config.json",
+            "w2v-bert-2.0/preprocessor_config.json",
+            "w2v-bert-2.0/model.safetensors",
+            "bigvgan/config.json",
+            "bigvgan/model.safetensors",
+            "qwen0.6bemo4-merge/config.json",
+            "qwen0.6bemo4-merge/generation_config.json",
+            "qwen0.6bemo4-merge/tokenizer.json",
+            "qwen0.6bemo4-merge/tokenizer_config.json",
+            "qwen0.6bemo4-merge/vocab.json",
+            "qwen0.6bemo4-merge/merges.txt",
+            "qwen0.6bemo4-merge/model.safetensors",
+        ),
+        description="Framework-ready IndexTTS2 safetensors layout with shared components at the model root.",
     ),
     ModelPackage(
         id="mel_band_roformer",
@@ -1076,6 +1265,118 @@ def resolve_path(path: str) -> Path:
     return REPO_ROOT / candidate
 
 
+_FAMILY_ID_STRIP_PATTERNS = (
+    re.compile(r"_\d+_\d+b(?:_base|_custom_voice|_voice_design)?$"),
+    re.compile(r"_\d+b(?:_base|_custom_voice|_voice_design)?$"),
+    re.compile(r"_\d+m(?:_bf16)?$"),
+    re.compile(r"_bf16$"),
+    re.compile(r"_\d+spk_v\d+$"),
+    re.compile(r"_\d+hz_\d+k_v\d+$"),
+    re.compile(r"_3_small_(?:music|sfx)$"),
+    re.compile(r"_3_medium$"),
+    re.compile(r"_v\d+(?:_\d+)?$"),
+    re.compile(r"_\d+$"),
+    re.compile(r"_model$"),
+    re.compile(r"_hf$"),
+    re.compile(r"_12hz$"),
+    re.compile(r"_(?:base|custom_voice|voice_design)$"),
+)
+
+
+def _default_family_from_package_id(package_id: str) -> str:
+    """Strip size/version suffixes from a package id. Prefer ``ModelPackage.family`` for exceptions."""
+    key = str(package_id or "").strip().lower()
+    if not key:
+        return ""
+    changed = True
+    while changed and key:
+        changed = False
+        for pattern in _FAMILY_ID_STRIP_PATTERNS:
+            updated = pattern.sub("", key)
+            if updated and updated != key:
+                key = updated
+                changed = True
+                break
+    return key
+
+
+def _default_tasks_from_family(family: str) -> list[str]:
+    key = str(family or "").strip().lower()
+    if not key:
+        return []
+    if "forced_aligner" in key or key.endswith("_aligner") or key.endswith("_align"):
+        return ["align"]
+    if key.endswith("_asr") or key.endswith("_stt") or key in {"parakeet_tdt", "whisper", "voxtral_realtime"}:
+        return ["asr"]
+    if "vad" in key:
+        return ["vad"]
+    if "diar" in key:
+        return ["diar"]
+    if any(token in key for token in ("demucs", "roformer", "separator")):
+        return ["sep"]
+    if key in {"stable_audio", "ace_step", "heartmula"} or key.endswith("_gen"):
+        return ["gen"]
+    if key.endswith("_vc") or key in {"seed_vc", "vevo2"}:
+        return ["vc"]
+    if key.endswith("_codec") or key == "miocodec":
+        return ["codec"]
+    if key.endswith("_asr") or key.endswith("_stt"):
+        return ["asr"]
+    if "tts" in key or key in {
+        "kokoro",
+        "kokoro_tts",
+        "chatterbox",
+        "voxcpm2",
+        "omnivoice",
+        "supertonic",
+        "miotts",
+        "pocket_tts",
+        "irodori_tts",
+        "index_tts2",
+        "vibevoice",
+        "moss_tts_nano",
+        "moss_tts_local",
+    }:
+        return ["tts"]
+    return []
+
+
+def _collect_package_repo_ids(package: ModelPackage) -> list[str]:
+    source = package.source
+    repos: list[str] = []
+    if isinstance(source, SnapshotSource):
+        repos.append(source.repo_id)
+    elif isinstance(source, CompositeSnapshotSource):
+        for placement in source.placements:
+            repos.append(placement.source.repo_id)
+    return [repo for repo in repos if isinstance(repo, str) and repo]
+
+
+def _package_is_gated(package: ModelPackage) -> bool:
+    if isinstance(package.gated, bool):
+        return package.gated
+    repos = [repo.lower() for repo in _collect_package_repo_ids(package)]
+    return any(any(marker in repo for marker in _GATED_REPO_MARKERS) for repo in repos)
+
+
+def _package_standalone_fields(package: ModelPackage) -> tuple[bool, str | None]:
+    if isinstance(package.standalone, bool):
+        return package.standalone, package.parent_package_id
+    desc = str(package.description or "").strip().lower()
+    kind = package_install_kind(package)
+    if desc.startswith("subcomponent only.") or desc.startswith("utility only.") or kind == "utility":
+        parent = package.parent_package_id
+        if not parent:
+            for token in desc.replace(".", " ").replace(",", " ").split():
+                if token in PACKAGE_BY_ID and token != package.id:
+                    parent = token
+                    break
+        return False, parent
+    if "tokenizer" in package.id.lower() or "audiovae" in package.id.lower():
+        return False, package.parent_package_id
+    return True, None
+
+
 def package_payload(package: ModelPackage) -> dict[str, object]:
     source = package.source
     if isinstance(source, SnapshotSource):
@@ -1084,6 +1385,7 @@ def package_payload(package: ModelPackage) -> dict[str, object]:
             "repo_id": source.repo_id,
             "revision": source.revision,
             "include_prefixes": list(source.include_prefixes),
+            "include_suffixes": list(source.include_suffixes),
             "exclude_prefixes": list(source.exclude_prefixes),
         }
         installable = True
@@ -1097,10 +1399,12 @@ def package_payload(package: ModelPackage) -> dict[str, object]:
                     "target_subdir": placement.target_subdir,
                     "required_files": list(placement.required_files),
                     "include_prefixes": list(placement.source.include_prefixes),
+                    "include_suffixes": list(placement.source.include_suffixes),
                     "exclude_prefixes": list(placement.source.exclude_prefixes),
                 }
                 for placement in source.placements
             ],
+            "repo_ids": _collect_package_repo_ids(package),
         }
         installable = True
     elif isinstance(source, ConverterSource):
@@ -1123,6 +1427,9 @@ def package_payload(package: ModelPackage) -> dict[str, object]:
             "reason": source.reason,
         }
         installable = False
+    family = package.family or _default_family_from_package_id(package.id)
+    tasks = list(package.tasks) if package.tasks else _default_tasks_from_family(family)
+    standalone, parent_package_id = _package_standalone_fields(package)
     return {
         "id": package.id,
         "display_name": package.display_name,
@@ -1133,6 +1440,12 @@ def package_payload(package: ModelPackage) -> dict[str, object]:
         "usage_examples": package_usage_examples(package),
         "required_files": list(package.required_files),
         "source": source_payload,
+        "family": family,
+        "tasks": tasks,
+        "modes": ["offline"] if tasks else [],
+        "standalone": standalone,
+        "parent_package_id": parent_package_id,
+        "gated": _package_is_gated(package),
     }
 
 
@@ -1181,6 +1494,8 @@ def list_hf_files(source: SnapshotSource) -> list[tuple[str, int | None]]:
             continue
         if source.include_prefixes and not any(path.startswith(prefix) for prefix in source.include_prefixes):
             continue
+        if source.include_suffixes and not any(path.endswith(suffix) for suffix in source.include_suffixes):
+            continue
         if any(path.startswith(prefix) for prefix in source.exclude_prefixes):
             continue
         size = entry.get("size")
@@ -1207,6 +1522,16 @@ def download_file(url: str, target: Path, expected_size: int | None) -> int:
 
 def validate_required_files(package: ModelPackage, root: Path) -> None:
     missing = [relative for relative in package.required_files if not (root / relative).exists()]
+    if missing:
+        raise RuntimeError(f"installed package is missing required files: {missing}")
+
+
+def validate_composite_required_files(package: ModelPackage, staged_root: Path, final_root: Path) -> None:
+    missing = [
+        relative
+        for relative in package.required_files
+        if not normalized_join(staged_root, relative).exists() and not normalized_join(final_root, relative).exists()
+    ]
     if missing:
         raise RuntimeError(f"installed package is missing required files: {missing}")
 
@@ -1371,6 +1696,17 @@ def convert_irodori_dacvae_weights(root: Path) -> None:
     write_checked_safetensors(tensors, output_path, input_path, overwrite=True)
 
 
+def write_irodori_model_config(root: Path) -> None:
+    input_path = root / "model.safetensors"
+    output_path = root / "model_config.json"
+    with safe_open(input_path, framework="pt", device="cpu") as handle:
+        metadata = handle.metadata()
+    config_json = metadata.get("config_json")
+    if config_json is None:
+        raise RuntimeError(f"Irodori-TTS model.safetensors is missing config_json metadata: {input_path}")
+    output_path.write_text(config_json, encoding="utf-8")
+
+
 def copy_bundled_model_manager_assets(asset_subdir: str, destination_root: Path, required_files: Iterable[str]) -> None:
     source_root = MODEL_MANAGER_ASSETS / asset_subdir
     validate_required_files_list(required_files, source_root, f"bundled model-manager assets {asset_subdir}")
@@ -1392,6 +1728,8 @@ def install_snapshot(package: ModelPackage, source: SnapshotSource, models_root:
         if package.id == "voxcpm2":
             convert_voxcpm2_audiovae(staging_dir)
             validate_required_files(package, staging_dir)
+        elif package.id == "moss_tts_nano_100m_model":
+            convert_moss_tts_weights(staging_dir)
         if target_dir.exists():
             if not overwrite:
                 raise RuntimeError(f"model directory already exists: {target_dir}")
@@ -1431,9 +1769,12 @@ def install_composite_snapshot(
         staged_package_root = staging_bundle / package.target_directory
         for placement in source.placements:
             destination_root = normalized_join(staged_package_root, placement.target_subdir)
+            final_root = normalized_join(package_root, placement.target_subdir)
+            if final_root.exists() and not overwrite:
+                validate_required_files_list(placement.required_files, final_root, str(final_root))
+                continue
             destination_root.mkdir(parents=True, exist_ok=True)
             install_snapshot_into_dir(placement.source, destination_root, placement.required_files)
-            final_root = normalized_join(package_root, placement.target_subdir)
             staged_roots[final_root] = destination_root
 
         if package.id == "vevo2":
@@ -1444,10 +1785,13 @@ def install_composite_snapshot(
         elif package.id == "ace_step":
             convert_ace_step_silence_latent(staged_package_root / "acestep-v15-turbo")
             convert_ace_step_silence_latent(staged_package_root / "acestep-v15-base")
-        elif package.id == "moss_tts":
+        elif package.id == "moss_tts_nano_100m":
             convert_moss_tts_weights(staged_package_root)
         elif package.id in {"irodori_tts_500m_v3", "irodori_tts_600m_v3_voice_design"}:
-            convert_irodori_dacvae_weights(staged_package_root.parent / "Semantic-DACVAE-Japanese-32dim")
+            write_irodori_model_config(staged_package_root)
+            dacvae_root = staged_package_root.parent / "Semantic-DACVAE-Japanese-32dim"
+            if dacvae_root.exists():
+                convert_irodori_dacvae_weights(dacvae_root)
         elif package.id == "vibevoice_asr":
             copy_bundled_model_manager_assets(
                 "vibevoice_1_5b",
@@ -1462,7 +1806,7 @@ def install_composite_snapshot(
                 staged_package_root,
                 ("tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt"),
             )
-        validate_required_files(package, staged_package_root)
+        validate_composite_required_files(package, staged_package_root, package_root)
 
         top_level_roots: list[Path] = []
         for final_root in sorted(staged_roots.keys(), key=lambda path: len(path.parts)):
@@ -2094,6 +2438,7 @@ def command_info(args: argparse.Namespace) -> int:
 
 
 def command_install(args: argparse.Namespace) -> int:
+    _ensure_install_deps()
     package = PACKAGE_BY_ID.get(args.package_id)
     if package is None:
         raise RuntimeError(f"unknown package id: {args.package_id}")

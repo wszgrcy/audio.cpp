@@ -67,7 +67,6 @@ modules::QwenCausalDecoderConfig make_qwen_decoder_config(const VibeVoiceDecoder
     out.stack.rms_norm_eps = config.rms_norm_eps;
     out.stack.rope_theta = config.rope_theta;
     out.stack.use_qk_norm = false;
-    out.stack.runtime.static_cache.transpose_context = true;
     out.stack.runtime.attention.prefill_mode = modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
     out.stack.runtime.attention.static_mode = modules::QwenDecoderAttentionMode::FlashGroupedViewKV;
     out.stack.runtime.static_cache.update_mode = modules::QwenDecoderStaticCacheUpdateMode::DirectSetRows;
@@ -201,7 +200,7 @@ runtime::TransformerKVState empty_decoder_state(size_t layers) {
 }  // namespace
 
 VibeVoiceDecoderWeights load_vibevoice_decoder_weights(
-    const VibeVoiceAssets & assets,
+    const VibeVoiceASRAssets & assets,
     ggml_backend_t backend,
     core::BackendType backend_type,
     size_t weight_context_bytes,
@@ -824,7 +823,7 @@ VibeVoiceDecoderCachedState::VibeVoiceDecoderCachedState(VibeVoiceDecoderCachedS
 VibeVoiceDecoderCachedState & VibeVoiceDecoderCachedState::operator=(VibeVoiceDecoderCachedState &&) noexcept = default;
 
 VibeVoiceDecoderWeightsRuntime::VibeVoiceDecoderWeightsRuntime(
-    std::shared_ptr<const VibeVoiceAssets> assets,
+    std::shared_ptr<const VibeVoiceASRAssets> assets,
     core::BackendType backend_type,
     int device,
     int threads,
@@ -872,7 +871,7 @@ VibeVoiceDecoderWeightsRuntime::~VibeVoiceDecoderWeightsRuntime() {
     }
 }
 
-const VibeVoiceAssets & VibeVoiceDecoderWeightsRuntime::assets() const noexcept {
+const VibeVoiceASRAssets & VibeVoiceDecoderWeightsRuntime::assets() const noexcept {
     return *assets_;
 }
 
